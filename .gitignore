@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+frontend_err.txt
+frontend_log.txt
+
+# Logs & temp
+backend_log.txt
+backend_err.txt
+tunnel_*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Unrelated local files
+security script.bat
+*.zip
