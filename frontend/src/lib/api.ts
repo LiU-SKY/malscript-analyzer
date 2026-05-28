@@ -1,5 +1,5 @@
 // frontend/src/lib/api.ts
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 export type RiskLevel = "safe" | "medium" | "high" | "critical";
 
