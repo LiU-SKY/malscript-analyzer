@@ -79,7 +79,7 @@ def ensemble_score(code: str, lang_hint: str = "Unknown") -> LocalModelResult:
     if not llm_required:
         # TOKEN_SAVE: 로컬 모델 점수가 낮으면 여기서 분기 — LLM 비용 제로
         logger.info(
-            f"[risk_scorer] score={final_score:.3f} < {RISK_THRESHOLD_LLM} → LLM SKIP (토큰 절감)"
+            f"[risk_scorer] score={final_score:.3f} < {RISK_THRESHOLD_LLM} -> LLM SKIP (TOKEN_SAVE)"
         )
 
     return LocalModelResult(

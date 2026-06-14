@@ -22,6 +22,12 @@ tunnel_*.log
 .DS_Store
 Thumbs.db
 
+# Runtime cache / logs
+backend/.cache/
+backend/api_logs/
+backend/logs/
+frontend/tsconfig.tsbuildinfo
+
 # Unrelated local files
 security script.bat
 *.zip

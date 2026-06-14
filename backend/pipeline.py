@@ -1,100 +1,102 @@
-# backend/pipeline.py
-# TOKEN_SAVE: 로컬 모델 점수 < 0.5 이면 Claude API 호출을 완전히 건너뜀
-from __future__ import annotations
-import time
-import logging
-
-from preprocessor import preprocess, compress_for_llm
-from local_model.risk_scorer import ensemble_score
-from security.schemas import (
-    AnalysisResult, LocalModelOutput, LLMReport,
-    MitreTechnique, RiskLevel
-)
-
-logger = logging.getLogger(__name__)
-
-try:
-    from llm_client.claude_client import call_claude
-    LLM_AVAILABLE = True
-except ImportError:
-    LLM_AVAILABLE = False
-    logger.warning("llm_client 미설치 → LLM 기능 비활성")
-
-
-def run_pipeline(filename: str, raw_bytes: bytes) -> AnalysisResult:
-    """
-    전체 분석 파이프라인 오케스트레이터
-
-    흐름:
-        전처리 → 로컬 AI (병렬) → TOKEN_SAVE 판단 → [Claude API] → 결과 반환
-
-    TOKEN_SAVE 포인트:
-        · score < 0.50 → Claude API 호출 SKIP (저위험 파일 100% 절감)
-        · 고위험이더라도 압축본(2,000자)만 LLM에 전달 → ~65% 절감
-    """
-    t_start = time.perf_counter()
-
-    # ── 1. 전처리 ──────────────────────────────────────────────────────────
-    # 인코딩 감지 · BOM 제거 · 개행 정규화 · MAX_CHARS=8,000 초과 시 잘라냄
-    prep = preprocess(raw_bytes, filename)
-    logger.info(f"[pipeline] 전처리 완료 | lang={prep.lang_hint} lines={prep.line_count}")
-
-    # ── 2. 로컬 모델 앙상블 ────────────────────────────────────────────────
-    # Ollama Mistral-7B (분류) + 규칙 기반 엔진 (난독화) 병렬 실행
-    # 역할: 빠른 1차 필터링 → 불필요한 Claude API 호출 차단 (게이트키퍼)
-    local = ensemble_score(prep.cleaned_code, prep.lang_hint)
-    logger.info(f"[pipeline] 로컬 분석 완료 | score={local.risk_score:.3f} level={local.risk_level}")
-
-    # ── 3. API 스키마 변환 ─────────────────────────────────────────────────
-    risk_level = _to_risk_level(local.risk_score)
-    obf = local.obfuscation_result
-
-    local_output = LocalModelOutput(
-        risk_score=local.risk_score,
-        risk_level=risk_level,
-        pattern_labels=local.pattern_labels,
-        obfuscation_techniques=local.obfuscation_techniques,
-        obfuscation_score=obf.score if obf else 0.0,
-        entropy=obf.entropy if obf else 0.0,
-        evidence=local.evidence,
-        llm_required=local.llm_required,
-    )
-
-    # ── 4. TOKEN_SAVE 판단 게이트 ──────────────────────────────────────────
-    # score < 0.50 → 로컬 결과만 반환 (Claude API 비용 제로)
-    # score ≥ 0.50 → 압축본(compress_for_llm)만 Claude에 전달 → ~65% 절감
-    llm_report: LLMReport | None = None
-    llm_skipped = not local.llm_required
-
-    if local.llm_required and LLM_AVAILABLE:
-        logger.info("[pipeline] score >= 0.5 → Claude API 호출 (claude-sonnet-4-6)")
-        # TOKEN_SAVE: 전체 코드 대신 압축본(최대 2,000자)만 전달
-        compressed = compress_for_llm(prep.cleaned_code, local.evidence)
-        llm_report = call_claude(compressed, local_output)
-    elif local.llm_required and not LLM_AVAILABLE:
-        logger.warning("[pipeline] LLM 미설정 → SKIP (폴백 리포트 없음)")
-        llm_skipped = True
-    else:
-        # TOKEN_SAVE: 저위험 파일 — Claude API 완전 생략
-        logger.info(f"[pipeline] TOKEN_SAVE: score={local.risk_score:.3f} < 0.5 → Claude API 생략")
-
-    elapsed_ms = int((time.perf_counter() - t_start) * 1000)
-
-    return AnalysisResult(
-        filename=filename,
-        file_size_bytes=prep.original_length,
-        lang_hint=prep.lang_hint,
-        line_count=prep.line_count,
-        truncated=prep.truncated,
-        local=local_output,
-        llm=llm_report,
-        llm_skipped=llm_skipped,
-        processing_time_ms=elapsed_ms,
-    )
-
-
-def _to_risk_level(score: float) -> RiskLevel:
-    if score >= 0.90: return RiskLevel.CRITICAL
-    if score >= 0.75: return RiskLevel.HIGH
-    if score >= 0.50: return RiskLevel.MEDIUM
-    return RiskLevel.SAFE
+# backend/pipeline.py
+# TOKEN_SAVE strategy:
+#   - API key SET   : threshold=0.10 (any pattern triggers Claude)
+#   - API key ABSENT: threshold=0.50 (local-only, zero API cost)
+from __future__ import annotations
+import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+import time, logging
+from preprocessor import preprocess, compress_for_llm
+from local_model.risk_scorer import ensemble_score
+from security.schemas import AnalysisResult, LocalModelOutput, LLMReport, RiskLevel, VulnerabilityReport
+from vulnerability.vuln_mapper import map_techniques_to_vulns, map_patterns_to_vulns
+
+logger = logging.getLogger(__name__)
+
+# API key 유무에 따라 LLM 호출 임계값 분기
+# - 키 있음: 0.10 -> 패턴 하나라도 잡히면 Claude 호출
+# - 키 없음: 0.50 -> Ollama 점수가 높아야 호출 (TOKEN_SAVE)
+_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+RISK_THRESHOLD_LLM = 0.10 if _API_KEY else 0.50
+
+try:
+    from llm_client.claude_client import call_claude
+    LLM_AVAILABLE = True
+except ImportError:
+    LLM_AVAILABLE = False
+
+
+def run_pipeline(filename: str, raw_bytes: bytes) -> AnalysisResult:
+    t_start = time.perf_counter()
+
+    prep = preprocess(raw_bytes, filename)
+    logger.info(f'[pipeline] preprocessed | lang={prep.lang_hint} lines={prep.line_count}')
+
+    local = ensemble_score(prep.cleaned_code, prep.lang_hint)
+    logger.info(f'[pipeline] local score={local.risk_score:.3f} level={local.risk_level}')
+
+    risk_level = _to_risk_level(local.risk_score)
+    obf = local.obfuscation_result
+    local_output = LocalModelOutput(
+        risk_score=local.risk_score,
+        risk_level=risk_level,
+        pattern_labels=local.pattern_labels,
+        obfuscation_techniques=local.obfuscation_techniques,
+        obfuscation_score=obf.score if obf else 0.0,
+        entropy=obf.entropy if obf else 0.0,
+        evidence=local.evidence,
+        llm_required=local.llm_required,
+    )
+
+    # LLM 호출 여부 결정
+    # API 키 있을 때: 의심 패턴 하나라도 검출되면 즉시 Claude 호출
+    # API 키 없을 때: 앙상블 점수 >= 0.50 일 때만 (Ollama 필요)
+    llm_needed = (local.risk_score >= RISK_THRESHOLD_LLM) or bool(local.pattern_labels)
+    llm_report: LLMReport | None = None
+    llm_skipped = not llm_needed
+
+    if llm_needed and LLM_AVAILABLE and _API_KEY:
+        logger.info(
+            f'[pipeline] calling Claude API | score={local.risk_score:.3f} '
+            f'patterns={local.pattern_labels} threshold={RISK_THRESHOLD_LLM}'
+        )
+        compressed = compress_for_llm(prep.cleaned_code, local.evidence)
+        llm_report = call_claude(compressed, local_output)
+    elif llm_needed and not _API_KEY:
+        logger.info(f'[pipeline] TOKEN_SAVE: no API key -> Claude skipped')
+        llm_skipped = True
+    else:
+        logger.info(f'[pipeline] no suspicious patterns detected -> Claude skipped')
+
+    # 취약점 매핑
+    vuln_report: VulnerabilityReport | None = None
+    if llm_report and llm_report.mitre_techniques:
+        ids = [t.technique_id for t in llm_report.mitre_techniques]
+        vuln_report = map_techniques_to_vulns(ids)
+        logger.info(f'[pipeline] vuln mapping: {len(vuln_report.vulnerabilities)} items (ATT&CK)')
+    elif local.pattern_labels:
+        vuln_report = map_patterns_to_vulns(local.pattern_labels)
+        logger.info(f'[pipeline] vuln mapping: {len(vuln_report.vulnerabilities)} items (patterns)')
+
+    elapsed_ms = int((time.perf_counter() - t_start) * 1000)
+
+    return AnalysisResult(
+        filename=filename,
+        file_size_bytes=prep.original_length,
+        lang_hint=prep.lang_hint,
+        line_count=prep.line_count,
+        truncated=prep.truncated,
+        local=local_output,
+        llm=llm_report,
+        llm_skipped=llm_skipped,
+        processing_time_ms=elapsed_ms,
+        vulnerabilities=vuln_report,
+    )
+
+
+def _to_risk_level(score: float) -> RiskLevel:
+    if score >= 0.90: return RiskLevel.CRITICAL
+    if score >= 0.75: return RiskLevel.HIGH
+    if score >= 0.50: return RiskLevel.MEDIUM
+    return RiskLevel.SAFE

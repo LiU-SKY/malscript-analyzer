@@ -53,6 +53,9 @@ class ClassifierResult:
     error: str | None = None
 
 
+OLLAMA_TIMEOUT_S = 30   # Ollama가 응답 없으면 30초 후 폴백
+
+
 def classify(code: str, lang_hint: str = "Unknown") -> ClassifierResult:
     catalog_str = "\n".join(f"- {p}" for p in PATTERN_CATALOG)
     prompt = CLASSIFY_PROMPT.format(
@@ -62,15 +65,26 @@ def classify(code: str, lang_hint: str = "Unknown") -> ClassifierResult:
     )
     try:
         import ollama  # lazy import — proxy 환경에서 모듈 로딩 시 crash 방지
-        response = ollama.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            options={"temperature": 0.1, "num_predict": 300},
-        )
+        import concurrent.futures as _cf
+
+        def _call_ollama():
+            return ollama.generate(
+                model=OLLAMA_MODEL,
+                prompt=prompt,
+                options={"temperature": 0.1, "num_predict": 300},
+            )
+
+        with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+            try:
+                response = ex.submit(_call_ollama).result(timeout=OLLAMA_TIMEOUT_S)
+            except _cf.TimeoutError:
+                logger.warning(f"[classifier] Ollama timeout after {OLLAMA_TIMEOUT_S}s -> falling back to rule-based")
+                return _rule_based_fallback(code)
+
         raw = response["response"].strip()
         return _parse_response(raw)
     except Exception as e:
-        logger.warning(f"[classifier] Ollama 호출 실패: {e} → 폴백 규칙 기반 분류 사용")
+        logger.warning(f"[classifier] Ollama call failed: {e} -> using rule-based fallback")
         return _rule_based_fallback(code)
 
 
@@ -85,7 +99,7 @@ def _parse_response(raw: str) -> ClassifierResult:
             raw_response=raw,
         )
     except json.JSONDecodeError:
-        logger.warning(f"[classifier] JSON 파싱 실패: {raw[:100]}")
+        logger.warning(f"[classifier] JSON parse failed: {raw[:100]}")
         return ClassifierResult(raw_response=raw, error="JSON parse failed")
 
 

@@ -1,72 +1,88 @@
 @echo off
-chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo.
-echo ╔══════════════════════════════════════════════╗
-echo ║       MalScript Analyzer — 의존성 설치       ║
-echo ╚══════════════════════════════════════════════╝
+echo ================================================
+echo   MalScript Analyzer -- Install Dependencies
+echo ================================================
 echo.
 
-:: ── Python 확인 ──
+:: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python 이 설치되어 있지 않습니다.
-    echo         https://www.python.org/downloads/ 에서 설치 후 재실행하세요.
+    echo [ERROR] Python is not installed.
+    echo         Install from https://www.python.org/downloads/
     pause & exit /b 1
 )
 for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo [OK] %%v
 
-:: ── Node.js 확인 ──
+:: Check Node.js
 node --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Node.js 가 설치되어 있지 않습니다.
-    echo         https://nodejs.org/ 에서 설치 후 재실행하세요.
+    echo [ERROR] Node.js is not installed.
+    echo         Install from https://nodejs.org/
     pause & exit /b 1
 )
 for /f "tokens=*" %%v in ('node --version 2^>^&1') do echo [OK] Node %%v
 
-:: ── Ollama 확인 (선택) ──
+:: Check Ollama (optional)
 ollama --version >nul 2>&1
 if errorlevel 1 (
-    echo [WARN] Ollama 미설치 — 규칙 기반 폴백으로만 동작합니다.
-    echo        설치: https://ollama.com/download
+    echo [WARN] Ollama not found -- rule-based fallback will be used.
+    echo        Install from: https://ollama.com/download
 ) else (
     for /f "tokens=*" %%v in ('ollama --version 2^>^&1') do echo [OK] Ollama %%v
 )
 
+:: Check Docker (optional - needed for Lab feature)
+docker --version >nul 2>&1
+if errorlevel 1 (
+    echo [WARN] Docker not found -- Docker Lab feature will be unavailable.
+    echo        Install Docker Desktop from: https://www.docker.com/products/docker-desktop
+) else (
+    for /f "tokens=*" %%v in ('docker --version 2^>^&1') do echo [OK] %%v
+    :: Check Docker daemon
+    docker info >nul 2>&1
+    if errorlevel 1 (
+        echo [WARN] Docker is installed but daemon is not running.
+        echo        Start Docker Desktop before using the Lab feature.
+    ) else (
+        echo [OK] Docker daemon is running
+    )
+)
+
 echo.
-echo ── 1/2  Python 패키지 설치 중 ─────────────────
+echo -- 1/2  Installing Python packages ----------------
 cd /d "%~dp0backend"
 pip install -r requirements.txt
 if errorlevel 1 (
-    echo [ERROR] pip install 실패
+    echo [ERROR] pip install failed
     pause & exit /b 1
 )
-echo [OK] Python 패키지 설치 완료
+echo [OK] Python packages installed
 
 echo.
-echo ── 2/2  Node 패키지 설치 중 ───────────────────
+echo -- 2/2  Installing Node packages ------------------
 cd /d "%~dp0frontend"
 npm install
 if errorlevel 1 (
-    echo [ERROR] npm install 실패
+    echo [ERROR] npm install failed
     pause & exit /b 1
 )
-echo [OK] Node 패키지 설치 완료
+echo [OK] Node packages installed
 
-:: ── .env 파일 생성 (없을 때만) ──
+:: Create .env if missing
 if not exist "%~dp0backend\.env" (
     copy "%~dp0backend\.env.example" "%~dp0backend\.env" >nul
     echo.
-    echo [INFO] backend\.env 파일이 생성됐습니다.
-    echo        ANTHROPIC_API_KEY 를 입력하면 Claude API 심층 분석이 활성화됩니다.
-    echo        없으면 폴백 리포트로 동작하므로 필수는 아닙니다.
+    echo [INFO] backend\.env created from .env.example
+    echo        Set ANTHROPIC_API_KEY to enable Claude deep analysis.
+    echo        Without it the service runs in fallback mode.
 )
 
 echo.
-echo ╔══════════════════════════════════════════════╗
-echo ║        설치 완료!  start.bat 을 실행하세요   ║
-echo ╚══════════════════════════════════════════════╝
+echo ================================================
+echo   Done!  Run start.bat to launch the service.
+echo ================================================
 echo.
 pause
