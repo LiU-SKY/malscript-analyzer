@@ -2,6 +2,20 @@
 > 2026-1 AI응용보안 기말 프로젝트  
 > 주제: 멀티스테이지 악성 스크립트 분석 + MITRE ATT&CK 매핑 플랫폼
 
+> ## ⚠️ 보안·사용 안내 (Security & Intended Use)
+>
+> 이 저장소는 **방어 목적의 악성 스크립트 정적 분석** 학습·연구용입니다. 본인이 소유하거나
+> 분석 권한이 있는 파일을, 인터넷과 분리된 격리 환경에서만 분석하십시오.
+>
+> `예시 악성 스크립트/` 안의 파일은 **분석기 동작 검증용 비실행 픽스처**입니다 — 스크립트
+> 첫 줄에서 종료되어 실제 악성 동작은 수행하지 않으며, 네트워크 주소는 문서용 예약 대역
+> (RFC 5737 TEST-NET, 192.0.2.0/24)만 사용합니다. 실제 악성코드를 저장소에 커밋하지 마십시오.
+>
+> This repository is for **defensive, educational static analysis** of suspicious scripts. Analyze only
+> files you own or are authorized to inspect, and only in an isolated environment with no network access.
+> The files under `예시 악성 스크립트/` are **inert test fixtures** (they exit at the first line and use
+> only RFC 5737 documentation addresses). Do not commit real malware to this repository.
+
 ---
 
 ## 1. 프로젝트 개요
